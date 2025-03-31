@@ -1,2 +1,6 @@
+.chainlit
+.files
+.git
 .idea
+__pycache__
 credentials.json

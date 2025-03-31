@@ -1,10 +1,13 @@
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from auth import google_slide_auth
-from util import call_api_decorator
+from .google_slide_auth import google_slide_auth
+from .util import call_api_decorator
 import uuid
+from PIL import Image
+import requests
+import io
 
-class Slide:
+class SlideOps:
     def __init__(self, presentation_id, page):
         # Authentication Google Slide API
         creds = google_slide_auth()
@@ -22,11 +25,10 @@ class Slide:
 
         self.slides = self.presentation.get("slides")
         self.page = page
-        self.page_id = self.get_page_id(self.slides, self.page)
+        self.page_id = self.get_page_id()
 
-    @staticmethod
-    def get_page_id(slides, page):
-        return slides[page].get('objectId')
+    def get_page_id(self):
+        return self.slides[self.page].get('objectId')
 
     def get_text_objects(self):
         text_obj_id = []
@@ -243,6 +245,7 @@ class Slide:
 
         return self.call_batch_update(requests)
 
+
     @call_api_decorator
     def call_batch_update(self, requests):
         body = {"requests": requests}
@@ -251,3 +254,103 @@ class Slide:
         ).execute()
 
         return response
+
+    def delete_slide(self):
+        requests = [
+            {
+                'deleteObject': {
+                    'objectId': self.page_id
+                }
+            }
+        ]
+
+        return self.call_batch_update(requests)
+
+    def copy_slide(self):
+        requests = [
+            {
+                "duplicateObject": {
+                    "objectId": self.page_id,
+                }
+            }
+        ]
+
+        return self.call_batch_update(requests)
+
+    def move_slide(self, position):
+        requests = [
+            {
+                "updateSlidesPosition": {
+                    "slideObjectIds": [
+                            self.page_id,
+                        ],
+                        "insertionIndex": position
+                    }
+                }
+        ]
+
+        return self.call_batch_update(requests)
+
+    def generate_thumbnail(self, output_path, thumbnail_properties):
+        try:
+            params = {'pageObjectId': self.page_id}
+
+            response = self.service.presentations().pages().getThumbnail(
+                presentationId=self.presentation_id,
+                **params
+            ).execute()
+
+            # Extract the thumbnail URL
+            thumbnail_url = response.get('contentUrl')
+
+            # Download the thumbnail image
+            img_data = requests.get(thumbnail_url).content
+            img = Image.open(io.BytesIO(img_data))
+            img.save(output_path)
+
+            print(f"Thumbnail saved to '{output_path}'")
+        except HttpError as e:
+            print(e)
+
+
+if __name__ == "__main__":
+    PRESENTATION_ID = "1DHp7nE_loMyVXuE1i0FA3gW8DGkyZs-s1JFbqI_fttc"
+
+    # slide = SlideOps(PRESENTATION_ID, page=0)
+    # text_objects = slide.get_text_objects()
+    #
+    # print(slide.make_cover_page("Hello, Google Slide API", "Hari"))
+
+    # slide = SlideOps(PRESENTATION_ID, page=2)
+    # title = "Types of AI?"
+    # content = "Computer Vision\n\tNatural Language Processing\n\t\tMachine Learning\n\t\t\tReinforcement Learning"
+    # print(slide.make_text_page(title, content))
+
+    slide = SlideOps(PRESENTATION_ID, page=8)
+    title = "Types of AI?"
+    content = "Computer Vision\n\tNatural Language Processing\n\t\tMachine Learning\n\t\t\tReinforcement Learning"
+    image_urls = ["https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png"] * 2
+    print(slide.make_text_and_image_page(title, content, image_urls))
+
+    # slide = Slide(PRESENTATION_ID, page=2)
+    # title = "Table Test"
+    # table_content =  [
+    #         ["Computer Vision", "NLP", "AI"],
+    #         ["ML", "Reinforcement Learning", "Generative AI"]
+    # ]
+    #
+    # print(slide.make_table_page(title, table_content))
+
+    # slide = Slide(PRESENTATION_ID, page=10)
+    # print(slide.delete_slide())
+
+    # slide = Slide(PRESENTATION_ID, page=9)
+    # print(slide.copy_slide())
+
+    # slide = Slide(PRESENTATION_ID, page=9)
+    # print(slide.move_slide(position=6))
+
+    # slide = Slide(PRESENTATION_ID, page=5)
+    # thumbnail_properties = {'mimeType': 'image/png'}
+    # output_path = "thumbnail.png"
+    # print(slide.generate_thumbnail(output_path, thumbnail_properties))
