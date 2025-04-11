@@ -9,8 +9,10 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ToolCallPartDelta,
 )
+from chainlit.input_widget import TextInput
+import webbrowser
 from slide_agent.presentation_model import ImageData, Content, BulletPoints
-from slide_agent.slide_gen import slide_gen_agent
+from slide_agent.slide_gen import slide_gen_agent, delete_unnecessary_slide, copy_slide, move_slide, update_presentation_content
 
 def prepare():
     with open('sample.txt', 'r', encoding='utf-8') as file:
@@ -131,11 +133,40 @@ def prepare():
 output_messages: list[str] = []
 
 @cl.on_chat_start
-def start_chat():
+async def start_chat():
     cl.user_session.set(
         "message_history",
         [{"role": "system", "content": "You are a helpful assistant."}],
     )
+
+    settings = await cl.ChatSettings(
+        [
+            TextInput(id="google_slide_url", label="Google Slide URL"),
+        ]
+    ).send()
+
+    await setup(settings)
+
+@cl.on_settings_update
+async def setup(settings):
+    google_slide_url = settings["google_slide_url"]
+
+    if google_slide_url:
+        presentation_id = google_slide_url.split("/")[5]
+        cl.user_session.set("presentation_id", presentation_id)
+
+    cl.user_session.set("google_slide_url", google_slide_url)
+
+
+@cl.set_starters
+async def set_starters():
+    return [
+        cl.Starter(
+            label="Create a presentation",
+            message="Can you help me create a presentation",
+            icon="/public/presentation.svg",
+            )
+    ]
 
 @cl.on_message
 async def main(message: cl.Message):
@@ -158,7 +189,6 @@ async def main(message: cl.Message):
 
     task1 = cl.Task(title="Synthesizing data for the presentation", status=cl.TaskStatus.RUNNING)
     await task_list.add_task(task1)
-
     await task_list.send()
 
     async with slide_gen_agent.iter("", deps=deps) as run:
@@ -221,6 +251,8 @@ async def main(message: cl.Message):
                             # await msg.stream_token(f'[Tools] Tool call {event.tool_call_id!r} returned => {event.result.content}')
             elif Agent.is_end_node(node):
                 assert run.result.data == node.data.data
+
+                final_result = run.result.data
                 # Once an End node is reached, the agent run is complete
                 output_messages.append(f'=== Final Agent Output: {run.result.data} ===')
 
@@ -248,30 +280,73 @@ async def main(message: cl.Message):
 
     task1.status = cl.TaskStatus.DONE
     task2 = cl.Task(title="Prepare template for the presentation", status=cl.TaskStatus.RUNNING)
-    await task_list.add_task(task2)
-    await task_list.send()
 
-    task2.status = cl.TaskStatus.DONE
-    task3 = cl.Task(title="Insert content into the presentation", status=cl.TaskStatus.RUNNING)
+    PRESENTATION_ID = cl.user_session.get("presentation_id")
+    target_layout = [slide.layout for slide in final_result.slides]
+    curr_template = ["cover", "table content", "only text", "text, image 25%", "text and image equal, 50%-50%",
+                "image, text 25%", "only image", "text and 4 images", "text and 2 images", "graph", "video",
+                "closing"]
+    task3 = cl.Task(title="Deleting unnecessary slide from the presentation", status=cl.TaskStatus.RUNNING)
+    task4 = cl.Task(title="Duplicate slides from the presentation", status=cl.TaskStatus.RUNNING)
+    task5 = cl.Task(title="Move slides to appropriate position", status=cl.TaskStatus.RUNNING)
+
+    await task_list.add_task(task2)
     await task_list.add_task(task3)
     await task_list.send()
 
+    # Delete unnecessary slides
+    curr_template = delete_unnecessary_slide(PRESENTATION_ID, target_layout, curr_template)
     task3.status = cl.TaskStatus.DONE
+    await task_list.add_task(task4)
+    await task_list.send()
+
+
+    # Duplicate slides
+    curr_template = copy_slide(PRESENTATION_ID, target_layout, curr_template)
+    task4.status = cl.TaskStatus.DONE
+    await task_list.add_task(task5)
+    await task_list.send()
+
+    # Move slides to the appropriate position
+    curr_template = move_slide(PRESENTATION_ID, target_layout, curr_template)
+    assert curr_template == target_layout
+    task5.status = cl.TaskStatus.DONE
+    task2.status = cl.TaskStatus.DONE
+    await task_list.send()
+
+
+    task6 = cl.Task(title="Update content of the presentation", status=cl.TaskStatus.RUNNING)
+    await task_list.add_task(task6)
+    await task_list.send()
+
+    update_presentation_content(PRESENTATION_ID, final_result.slides)
+
+    task6.status = cl.TaskStatus.DONE
     await task_list.send()
 
     thumbnails = [cl.Image(name = f"{i}", path=f"./thumbnail/{i}.png", display="inline") for i in range(17)]
 
+    # Sending an action button within a chatbot message
+    actions = [
+        cl.Action(name="like", payload={"value": "example_value"}, label="", icon="thumbs-up"),
+        cl.Action(name="dislike", payload={"value": "example_value"}, label="", icon="thumbs-down"),
+        cl.Action(name="action_button", payload={"google_slide_url": cl.user_session.get("google_slide_url")},
+                  label="Open with Google Slide",
+                  icon="presentation"),
+        cl.Action(name="download_button", payload={"value": "example_value"}, label="Download Presentation",
+                  icon="download"),
+    ]
+
     await cl.Message(
         content = "This is a presentation result",
-        elements = thumbnails
+        elements = thumbnails,
+        actions = actions
     ).send()
 
-@cl.set_starters
-async def set_starters():
-    return [
-        cl.Starter(
-            label="Create a presentation",
-            message="Can you help me create a presentation",
-            icon="/public/ppt-icon.svg",
-            )
-    ]
+@cl.action_callback("action_button")
+async def on_action(action):
+    webbrowser.open_new_tab(url = action.payload["google_slide_url"])
+    # Optionally remove the action button from the chatbot user interface
+    await action.remove()
+
+google_slide_url = ""

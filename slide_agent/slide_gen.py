@@ -269,8 +269,9 @@ if __name__ == "__main__":
     curr_template = move_slide(PRESENTATION_ID, layouts, curr_template)
     assert curr_template == layouts
 
-    for i, slide in enumerate(result.data.slides):
-        s = SlideOps(PRESENTATION_ID, page=i)
+def update_presentation_content(presentation_id, slides):
+    for i, slide in enumerate(slides):
+        s = SlideOps(presentation_id, page=i)
 
         # Get Textbox
         textboxes = s.get_text_objects()
